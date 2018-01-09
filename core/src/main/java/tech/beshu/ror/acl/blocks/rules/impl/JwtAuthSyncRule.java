@@ -17,6 +17,7 @@
 package tech.beshu.ror.acl.blocks.rules.impl;
 
 import com.google.common.base.Strings;
+import com.google.common.collect.Sets;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jws;
@@ -40,7 +41,11 @@ import java.security.KeyFactory;
 import java.security.PrivilegedAction;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
+import java.util.Collection;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class JwtAuthSyncRule extends UserRule implements Authentication {
 
@@ -80,9 +85,8 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
 
   @Override
   public RuleExitResult match(RequestContext rc) {
-    Optional<String> token = Optional.of(rc.getHeaders())
-      .map(m -> m.get(settings.getHeaderName()))
-      .flatMap(JwtAuthSyncRule::extractToken);
+    Optional<String> token = Optional.of(rc.getHeaders()).map(m -> m.get(settings.getHeaderName()))
+        .flatMap(JwtAuthSyncRule::extractToken);
 
     if (!token.isPresent()) {
       logger.debug("Authorization header is missing or does not contain a bearer token");
@@ -90,22 +94,25 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
     }
 
     try {
-      Jws<Claims> jws = AccessController.doPrivileged(
-        (PrivilegedAction<Jws<Claims>>) () -> {
-          JwtParser parser = Jwts.parser();
-          if (signingKeyForAlgo.isPresent()) {
-            parser.setSigningKey(signingKeyForAlgo.get());
-          } else {
-            parser.setSigningKey(settings.getKey());
-          }
-          return parser.parseClaimsJws(token.get());
+      Jws<Claims> jws = AccessController.doPrivileged((PrivilegedAction<Jws<Claims>>) () -> {
+        JwtParser parser = Jwts.parser();
+        if (signingKeyForAlgo.isPresent()) {
+          parser.setSigningKey(signingKeyForAlgo.get());
+        } else {
+          parser.setSigningKey(settings.getKey());
         }
-      );
+        return parser.parseClaimsJws(token.get());
+      });
 
       Optional<String> user = settings.getUserClaim().map(claim -> jws.getBody().get(claim, String.class));
       if (settings.getUserClaim().isPresent())
-        if (!user.isPresent()) return NO_MATCH;
-        else rc.setLoggedInUser(new LoggedUser(user.get()));
+        if (!user.isPresent())
+          return NO_MATCH;
+        else
+          rc.setLoggedInUser(new LoggedUser(user.get()));
+
+      if (!extractAndCheckRoles(jws))
+        return NO_MATCH;
 
       return MATCH;
     } catch (ExpiredJwtException | UnsupportedJwtException | MalformedJwtException | SignatureException e) {
@@ -116,5 +123,56 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
   @Override
   public String getKey() {
     return settings.getName();
+  }
+
+  @SuppressWarnings("unchecked")
+  private boolean extractAndCheckRoles(Jws<Claims> jws) {
+    // No roles defined => authorize
+    if (settings.getRoles().isEmpty())
+      return true;
+
+    // Check role claims is defined
+    if (!settings.getRolesClaim().isPresent()) {
+      logger.debug("Roles are defined but no roles claim.");
+      return false;
+    }
+
+    // Computes roles
+    Optional<Object> rolesObj = settings.getRolesClaim().map(claim -> {
+      String[] path = claim.split("[.]");
+      if (path.length < 2)
+        return jws.getBody().get(claim, Object.class);
+      else {
+        // Ok we need to parse all sub sequent path
+        Object value = jws.getBody().get(path[0], Object.class);
+        int i = 1;
+        while (i < path.length && value != null && value instanceof Map<?, ?>) {
+          value = ((Map<String, Object>) value).get(path[i]);
+          i++;
+        }
+        return value;
+      }
+    });
+
+    if (!rolesObj.isPresent()) {
+      logger.debug("Unable to extract roles from token : no role is present.");
+      return false;
+    }
+
+    // We got here the roles as Object. 
+    // We expected a string or an array of string.
+    Object ro = rolesObj.get();
+    Set<String> roles;
+
+    if (ro instanceof Collection<?>) {
+      roles = ((Collection<String>) ro).stream().collect(Collectors.toSet());
+    } else if (ro instanceof String) {
+      roles = Sets.newHashSet((String) ro);
+    } else {
+      logger.debug("Unable to extract roles from token : wrong types.");
+      return false;
+    }
+
+    return roles != null && !roles.isEmpty() && !Sets.intersection(roles, settings.getRoles()).isEmpty();
   }
 }
