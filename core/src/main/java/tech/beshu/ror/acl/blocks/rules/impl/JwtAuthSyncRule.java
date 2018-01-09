@@ -16,8 +16,22 @@
  */
 package tech.beshu.ror.acl.blocks.rules.impl;
 
+import java.security.AccessController;
+import java.security.Key;
+import java.security.KeyFactory;
+import java.security.PrivilegedAction;
+import java.security.spec.X509EncodedKeySpec;
+import java.util.Base64;
+import java.util.Collection;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.common.collect.Sets;
+
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jws;
@@ -35,23 +49,12 @@ import tech.beshu.ror.commons.shims.es.LoggerShim;
 import tech.beshu.ror.requestcontext.RequestContext;
 import tech.beshu.ror.settings.rules.JwtAuthRuleSettings;
 
-import java.security.AccessController;
-import java.security.Key;
-import java.security.KeyFactory;
-import java.security.PrivilegedAction;
-import java.security.spec.X509EncodedKeySpec;
-import java.util.Base64;
-import java.util.Collection;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 public class JwtAuthSyncRule extends UserRule implements Authentication {
 
   private final LoggerShim logger;
   private final JwtAuthRuleSettings settings;
   private final Optional<Key> signingKeyForAlgo;
+  private static final String AVAILABLE_GROUPS_HEADER = "x-ror-available-groups";
 
   public JwtAuthSyncRule(JwtAuthRuleSettings settings, ESContext context) {
     this.logger = context.logger(getClass());
@@ -66,7 +69,6 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
     }
 
     return Optional.ofNullable(Strings.emptyToNull(authHeader));
-
   }
 
   private Optional<Key> getSigningKeyForAlgo() {
@@ -113,6 +115,9 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
 
       if (!extractAndCheckRoles(jws))
         return NO_MATCH;
+
+      // Write groups
+      rc.setResponseHeader(AVAILABLE_GROUPS_HEADER, Joiner.on(",").join(settings.getRoles()));
 
       return MATCH;
     } catch (ExpiredJwtException | UnsupportedJwtException | MalformedJwtException | SignatureException e) {

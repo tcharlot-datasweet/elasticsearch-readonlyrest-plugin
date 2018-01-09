@@ -20,88 +20,62 @@ import java.util.Collections;
 import java.util.Optional;
 import java.util.Set;
 
-import com.google.common.base.Strings;
-
 import tech.beshu.ror.commons.settings.RawSettings;
-import tech.beshu.ror.commons.settings.SettingsMalformedException;
 import tech.beshu.ror.settings.AuthKeyProviderSettings;
 import tech.beshu.ror.settings.RuleSettings;
+import tech.beshu.ror.settings.definitions.JwtAuthDefinitionSettings;
+import tech.beshu.ror.settings.definitions.JwtAuthDefinitionSettingsCollection;
 
 public class JwtAuthRuleSettings implements RuleSettings, AuthKeyProviderSettings {
 
   public static final String ATTRIBUTE_NAME = "jwt_auth";
-  private static final String SIGNATURE_ALGO = "signature_algo";
-  private static final String SIGNATURE_KEY = "signature_key";
-  private static final String USER_CLAIM = "user_claim";
-  private static final String ROLES_CLAIM = "roles_claim";
-  private static final String HEADER_NAME = "header_name";
-  private static final String DEFAULT_HEADER_NAME = "Authorization";
+
+  private static final String JWT_NAME = "name";
   private static final String ROLES = "roles";
 
-  private final byte[] key;
-  private final Optional<String> userClaim;
-  private final Optional<String> rolesClaim;
-  private final Optional<String> algo;
-  private final String headerName;
+  private final JwtAuthDefinitionSettings jwtAuthSettings;
   private final Set<String> roles;
 
-  @SuppressWarnings("unchecked")
-  private JwtAuthRuleSettings(String key,  Optional<String> algo, Optional<String> userClaim, Optional<String> rolesClaim, Optional<String> headerName, Optional<Set<?>> roles) {
-    if (Strings.isNullOrEmpty(key))
-      throw new SettingsMalformedException(
-        "Attribute '" + SIGNATURE_KEY + "' shall not evaluate to an empty string");
-    this.key = key.getBytes();
-    this.algo = algo;
-    this.userClaim = userClaim;
-    this.rolesClaim = rolesClaim;
-    this.headerName = headerName.orElse(DEFAULT_HEADER_NAME);
-    this.roles = (Set<String>)(roles.orElse(Collections.emptySet()));
+  private JwtAuthRuleSettings(JwtAuthDefinitionSettings settings, Set<String> roles) {
+    this.jwtAuthSettings = settings;
+    this.roles = roles;
   }
 
-  public static JwtAuthRuleSettings from(RawSettings settings) {
+  @SuppressWarnings("unchecked")
+  public static JwtAuthRuleSettings from(RawSettings settings, JwtAuthDefinitionSettingsCollection jwtSettingsCollection) {
+    String jwtName = settings.stringReq(JWT_NAME);
+    Set<String> roles = (Set<String>)(settings.notEmptySetOpt(ROLES).orElse(Collections.emptySet()));
     return new JwtAuthRuleSettings(
-      evalPrefixedSignatureKey(ensureString(settings, SIGNATURE_KEY)),
-      settings.stringOpt(SIGNATURE_ALGO),
-      settings.stringOpt(USER_CLAIM),
-      settings.stringOpt(ROLES_CLAIM),
-      settings.stringOpt(HEADER_NAME),
-      settings.notEmptySetOpt(ROLES)
+      jwtSettingsCollection.get(jwtName),
+      roles
     );
   }
 
-  private static String ensureString(RawSettings settings, String key) {
-    Object value = settings.req(key);
-    if (value instanceof String) return (String) value;
-    else throw new SettingsMalformedException(
-      "Attribute '" + key + "' must be a string; if it looks like a number try adding quotation marks");
-  }
-
-  private static String evalPrefixedSignatureKey(String s) {
-    if (s.startsWith("text:"))
-      return s.substring(5);
-    else if (s.startsWith("env:"))
-      return System.getenv(s.substring(4));
-    else return s;
+  public static JwtAuthRuleSettings from(String jwtName, JwtAuthDefinitionSettingsCollection jwtSettingsCollection) {
+    return new JwtAuthRuleSettings(
+      jwtSettingsCollection.get(jwtName), 
+      Collections.emptySet()
+    );
   }
 
   public byte[] getKey() {
-    return key;
+    return jwtAuthSettings.getKey();
   }
 
   public Optional<String> getAlgo() {
-   return algo;
+   return jwtAuthSettings.getAlgo();
   }
 
   public Optional<String> getUserClaim() {
-    return userClaim;
+    return jwtAuthSettings.getUserClaim();
   }
 
   public Optional<String> getRolesClaim() {
-    return rolesClaim;
+    return jwtAuthSettings.getRolesClaim();
   }
 
   public String getHeaderName() {
-    return headerName;
+    return jwtAuthSettings.getHeaderName();
   }
 
   public Set<String> getRoles() {
