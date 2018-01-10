@@ -30,6 +30,7 @@ import tech.beshu.ror.commons.settings.RawSettings;
 import tech.beshu.ror.commons.settings.SettingsMalformedException;
 import tech.beshu.ror.mocks.MockedESContext;
 import tech.beshu.ror.requestcontext.RequestContext;
+import tech.beshu.ror.settings.definitions.JwtAuthDefinitionSettingsCollection;
 import tech.beshu.ror.settings.rules.JwtAuthRuleSettings;
 
 import java.security.KeyException;
@@ -50,9 +51,11 @@ import static org.mockito.Mockito.when;
 
 public class JwtAuthRuleTests {
 
-  private static final String SETTINGS_SIGNATURE_KEY = JwtAuthRuleSettings.SIGNATURE_KEY;
-  private static final String SETTINGS_SIGNATURE_ALGO = JwtAuthRuleSettings.SIGNATURE_ALGO;
-  private static final String SETTINGS_USER_CLAIM = JwtAuthRuleSettings.USER_CLAIM;
+  private static final String JWT_NAME = "test-jwt";;
+  private static final String SETTINGS_SIGNATURE_KEY = "signature_key";
+  private static final String SETTINGS_SIGNATURE_ALGO = "signature_algo";
+  private static final String SETTINGS_USER_CLAIM = "user_claim";
+  private static final String SETTINGS_ROLES_CLAIM = "roles_claim";
   private static final String ALGO = "HS256";
   private static final String SECRET = "123456";
   private static final String BAD_SECRET = "abcdef";
@@ -211,7 +214,7 @@ public class JwtAuthRuleTests {
   @Test
   public void shouldSupportTextPrefixInSignatureKey() {
     RawSettings raw = makeSettings(SETTINGS_SIGNATURE_KEY, "text:" + SECRET);
-    JwtAuthRuleSettings settings = JwtAuthRuleSettings.from(raw);
+    JwtAuthRuleSettings settings = JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
     assertArrayEquals(SECRET.getBytes(), settings.getKey());
   }
 
@@ -229,26 +232,26 @@ public class JwtAuthRuleTests {
     /* ************************************************************* */
 
     RawSettings raw = makeSettings(SETTINGS_SIGNATURE_KEY, "env:" + variable);
-    JwtAuthRuleSettings settings = JwtAuthRuleSettings.from(raw);
+    JwtAuthRuleSettings settings = JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
     assertArrayEquals(value.getBytes(), settings.getKey());
   }
 
   @Test(expected = SettingsMalformedException.class)
   public void shouldFailWhenKeytIsEmpty() {
     RawSettings raw = makeSettings(SETTINGS_SIGNATURE_KEY, "");
-    JwtAuthRuleSettings.from(raw);
+    JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
   }
 
   @Test(expected = SettingsMalformedException.class)
   public void shouldFailWhenKeyFromEnvironmentIsEmpty() {
     RawSettings raw = makeSettings(SETTINGS_SIGNATURE_KEY, "env:" + EMPTY_VAR);
-    JwtAuthRuleSettings.from(raw);
+    JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
   }
 
   @Test(expected = SettingsMalformedException.class)
   public void shouldFailInAControlledFashionWhenKeyIsNotAString() {
-    RawSettings raw = makeSettings(false, SETTINGS_SIGNATURE_KEY, "123456");
-    JwtAuthRuleSettings.from(raw);
+    RawSettings raw = makeSettings(JWT_NAME, false, SETTINGS_SIGNATURE_KEY, "123456");
+    JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
   }
 
   private RequestContext getMock(String token) {
@@ -258,16 +261,18 @@ public class JwtAuthRuleTests {
   }
 
   private RawSettings makeSettings(String... kvp) {
-    return makeSettings(true, kvp);
+    return makeSettings(JWT_NAME, true, kvp);
   }
 
-  private RawSettings makeSettings(boolean escapeValues, String... kvp) {
+  private RawSettings makeSettings(String jwtName, boolean escapeValues, String... kvp) {
     assert kvp.length % 2 == 0;
 
     StringBuilder sb = new StringBuilder();
+
+    sb.append("- name:").append(jwtName).append("\n");
+
     for (int i = 0; i < kvp.length; i += 2) {
-      sb.append(kvp[i]);
-      sb.append(": ");
+      sb.append("  ").append(kvp[i]).append(": ");
       if (escapeValues) sb.append('"');
       sb.append(kvp[i + 1]);
       if (escapeValues) sb.append('"');
@@ -278,8 +283,12 @@ public class JwtAuthRuleTests {
   }
 
   private Optional<SyncRule> makeRule(RawSettings settings) {
+   return makeRule(JWT_NAME, settings);
+  }
+
+  private Optional<SyncRule> makeRule(String jwtName, RawSettings settings) {
     try {
-      return Optional.of(new JwtAuthSyncRule(JwtAuthRuleSettings.from(settings), MockedESContext.INSTANCE));
+      return Optional.of(new JwtAuthSyncRule(JwtAuthRuleSettings.from(jwtName, JwtAuthDefinitionSettingsCollection.from(settings)), MockedESContext.INSTANCE));
     } catch (Exception e) {
       e.printStackTrace();
       return Optional.empty();
@@ -329,5 +338,4 @@ public class JwtAuthRuleTests {
   private String getInvalidPublicKey() {
     return getRsaPublicKey().replace("QAB", "QAC");
   }
-
 }
