@@ -41,6 +41,8 @@ import java.security.KeyFactory;
 import java.security.PrivateKey;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
@@ -342,6 +344,7 @@ public class JwtAuthRuleTests {
       .claim(ROLES_CLAIM, new String[] { "role_1", "role_2", "role_test" })
       .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
       .compact();
+
     RawSettings settings = makeSettings(
       SETTINGS_SIGNATURE_KEY, SECRET,
       SETTINGS_ROLES_CLAIM, ROLES_CLAIM
@@ -349,6 +352,56 @@ public class JwtAuthRuleTests {
     RequestContext rc = getMock(token);
 
     Optional<SyncRule> rule = makeRule(JWT_NAME, "role_3,role_test", settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertTrue(res.get().isMatch());
+  }
+
+  @Test
+  public void shouldRejectTokenWithWrongPath() {
+    Map<String, String> m = new HashMap<>();
+    m.put("subpath", "role_test");
+
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .claim("roles", m)
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, "roles.wrong_path"
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(JWT_NAME, "role_test", settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertFalse(res.get().isMatch());
+  }
+
+  @Test
+  public void shouldAuthorizeWithRolePath() {
+    Map<String, String> m = new HashMap<>();
+    m.put("subpath", "role_test");
+
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .claim("roles", m)
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, "roles.subpath"
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(JWT_NAME, "role_test", settings);
     Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
     rc.commit();
 
