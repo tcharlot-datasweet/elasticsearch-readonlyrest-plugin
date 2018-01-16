@@ -23,6 +23,7 @@ import java.security.PrivilegedAction;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -54,7 +55,6 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
   private final LoggerShim logger;
   private final JwtAuthRuleSettings settings;
   private final Optional<Key> signingKeyForAlgo;
-  private static final String AVAILABLE_GROUPS_HEADER = "x-ror-available-groups";
 
   public JwtAuthSyncRule(JwtAuthRuleSettings settings, ESContext context) {
     this.logger = context.logger(getClass());
@@ -113,11 +113,18 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
         else
           rc.setLoggedInUser(new LoggedUser(user.get()));
 
-      if (!extractAndCheckRoles(jws))
-        return NO_MATCH;
-
-      // Write groups
-      rc.setResponseHeader(AVAILABLE_GROUPS_HEADER, Joiner.on(",").join(settings.getRoles()));
+      Optional<Set<String>> roles = this.extractRoles(jws);
+      if (settings.getRolesClaim().isPresent()) {
+        if (!roles.isPresent())
+          return NO_MATCH; 
+      }
+      if (!settings.getRoles().isEmpty()) {
+        if (!roles.isPresent())
+          return NO_MATCH;
+        Set<String> r = roles.get();
+        if (r.isEmpty() || Sets.intersection(r, settings.getRoles()).isEmpty())
+          return NO_MATCH;
+      }
 
       return MATCH;
     } catch (ExpiredJwtException | UnsupportedJwtException | MalformedJwtException | SignatureException e) {
@@ -131,18 +138,8 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
   }
 
   @SuppressWarnings("unchecked")
-  private boolean extractAndCheckRoles(Jws<Claims> jws) {
-    // No roles defined => authorize
-    if (settings.getRoles().isEmpty())
-      return true;
-
-    // Check role claims is defined
-    if (!settings.getRolesClaim().isPresent()) {
-      logger.debug("Roles are defined but no roles claim.");
-      return false;
-    }
-
-    // Computes roles
+  private Optional<Set<String>> extractRoles(Jws<Claims> jws) {
+    // Get claim roles
     Optional<Object> rolesObj = settings.getRolesClaim().map(claim -> {
       String[] path = claim.split("[.]");
       if (path.length < 2)
@@ -159,25 +156,17 @@ public class JwtAuthSyncRule extends UserRule implements Authentication {
       }
     });
 
-    if (!rolesObj.isPresent()) {
-      logger.debug("Unable to extract roles from token : no role is present.");
-      return false;
-    }
+    // Casting
+    return rolesObj.flatMap(value ->{
+      Set<String> set = new HashSet<>();
 
-    // We got here the roles as Object. 
-    // We expected a string or an array of string.
-    Object ro = rolesObj.get();
-    Set<String> roles;
-
-    if (ro instanceof Collection<?>) {
-      roles = ((Collection<String>) ro).stream().collect(Collectors.toSet());
-    } else if (ro instanceof String) {
-      roles = Sets.newHashSet((String) ro);
-    } else {
-      logger.debug("Unable to extract roles from token : wrong types.");
-      return false;
-    }
-
-    return roles != null && !roles.isEmpty() && !Sets.intersection(roles, settings.getRoles()).isEmpty();
+      if (value instanceof Collection<?>) {
+        set.addAll((Collection<String>) value);
+      } else if (value instanceof String) {
+        set.add((String) value);
+      }
+      if (set.isEmpty()) return Optional.empty();
+      return Optional.of(set);
+    });
   }
 }

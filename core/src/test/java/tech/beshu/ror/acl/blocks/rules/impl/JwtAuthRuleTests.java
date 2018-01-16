@@ -16,8 +16,11 @@
  */
 package tech.beshu.ror.acl.blocks.rules.impl;
 
+import com.google.common.base.Joiner;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
+import com.jayway.jsonpath.internal.function.text.Length;
+
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
 import org.junit.Test;
@@ -40,6 +43,8 @@ import java.security.spec.PKCS8EncodedKeySpec;
 import java.util.Base64;
 import java.util.Map.Entry;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
@@ -62,6 +67,7 @@ public class JwtAuthRuleTests {
   private static final String SUBJECT = "test";
   private static final String USER_CLAIM = "user";
   private static final String USER1 = "user1";
+  private static final String ROLES_CLAIM = "roles";
   private static final String EMPTY_VAR = "HOPE_THIS_VARIABLE_IS_NOT_IN_THE_ENVIRONMENT";
 
   @Test
@@ -254,6 +260,103 @@ public class JwtAuthRuleTests {
     JwtAuthRuleSettings.from(JWT_NAME, JwtAuthDefinitionSettingsCollection.from(raw));
   }
 
+  @Test
+  public void shouldAcceptRolesClaimSetting() {
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET, 
+      SETTINGS_ROLES_CLAIM, ROLES_CLAIM
+    );
+    Optional<SyncRule> rule = makeRule(settings);
+    assertTrue(rule.isPresent());
+  }
+
+  @Test
+  public void shouldRejectTokenWithoutTheConfiguredRolesClaim() {
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, ROLES_CLAIM
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertFalse(res.get().isMatch());
+  }
+
+  @Test
+  public void shouldAuthorizeWithASimpleRole() {
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .claim(ROLES_CLAIM, "role_test")
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, ROLES_CLAIM
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(JWT_NAME, "role_test", settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertTrue(res.get().isMatch());
+  }
+
+  @Test
+  public void shouldAuthorizeWithAnArrayOfRoles() {
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .claim(ROLES_CLAIM, new String[] { "role_1", "role_2", "role_test" })
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, ROLES_CLAIM
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(JWT_NAME, "role_test", settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertTrue(res.get().isMatch());
+  }
+
+  @Test
+  public void shouldAuthorizeWithIntersectRoles() {
+    String token = Jwts.builder()
+      .setSubject(SUBJECT)
+      .claim(ROLES_CLAIM, new String[] { "role_1", "role_2", "role_test" })
+      .signWith(SignatureAlgorithm.valueOf(ALGO), SECRET.getBytes())
+      .compact();
+    RawSettings settings = makeSettings(
+      SETTINGS_SIGNATURE_KEY, SECRET,
+      SETTINGS_ROLES_CLAIM, ROLES_CLAIM
+    );
+    RequestContext rc = getMock(token);
+
+    Optional<SyncRule> rule = makeRule(JWT_NAME, "role_3,role_test", settings);
+    Optional<RuleExitResult> res = rule.map(r -> r.match(rc));
+    rc.commit();
+
+    assertTrue(rule.isPresent());
+    assertTrue(res.isPresent());
+    assertTrue(res.get().isMatch());
+  }
+
   private RequestContext getMock(String token) {
     RequestContext mock = Mockito.mock(RequestContext.class);
     when(mock.getHeaders()).thenReturn(ImmutableMap.of("Authorization", "Bearer " + token));
@@ -268,11 +371,11 @@ public class JwtAuthRuleTests {
     assert kvp.length % 2 == 0;
 
     StringBuilder sb = new StringBuilder();
-
-    sb.append("- name:").append(jwtName).append("\n");
+    sb.append("jwt:\n");
+    sb.append(" - name: ").append(jwtName).append("\n");
 
     for (int i = 0; i < kvp.length; i += 2) {
-      sb.append("  ").append(kvp[i]).append(": ");
+      sb.append("   ").append(kvp[i]).append(": ");
       if (escapeValues) sb.append('"');
       sb.append(kvp[i + 1]);
       if (escapeValues) sb.append('"');
@@ -283,12 +386,36 @@ public class JwtAuthRuleTests {
   }
 
   private Optional<SyncRule> makeRule(RawSettings settings) {
-   return makeRule(JWT_NAME, settings);
+   return makeRule(JWT_NAME, null, settings);
   }
 
-  private Optional<SyncRule> makeRule(String jwtName, RawSettings settings) {
+  private Optional<SyncRule> makeRule(String jwtName, String forRoles, RawSettings settings) {
     try {
-      return Optional.of(new JwtAuthSyncRule(JwtAuthRuleSettings.from(jwtName, JwtAuthDefinitionSettingsCollection.from(settings)), MockedESContext.INSTANCE));
+      StringBuilder sb = new StringBuilder();
+      sb.append("jwt_auth:\n");
+      sb.append("  name: \"").append(jwtName).append("\"\n");
+      if (forRoles != null) {
+        sb.append("  roles: ");
+        String[] roles = forRoles.split(",");
+        if (roles.length > 1) 
+          sb.append("[");
+        for (int i = 0; i < roles.length; i ++) {
+          sb.append('"')
+            .append(roles[i])
+            .append('"')
+            .append(", ");
+        }
+        sb.setLength(sb.length() - 2);  // remove last ", "
+        if (roles.length > 1) 
+          sb.append("]");
+        sb.append("\n");
+      }
+
+      return Optional.of(new JwtAuthSyncRule(
+        JwtAuthRuleSettings.from(TestUtils.fromYAMLString(sb.toString()).inner(JwtAuthRuleSettings.ATTRIBUTE_NAME),
+        JwtAuthDefinitionSettingsCollection.from(settings)), 
+        MockedESContext.INSTANCE
+      ));
     } catch (Exception e) {
       e.printStackTrace();
       return Optional.empty();
